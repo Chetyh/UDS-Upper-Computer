@@ -22,6 +22,7 @@ def main() -> None:
             "Data",
             "NeedResponse",
             "ExpectedResponse",
+            "FrameType",
             "WaitMs",
         ]
     )
@@ -36,6 +37,7 @@ def main() -> None:
             "",
             1,
             "0x50 0x01",
+            "STD",
             100,
         ]
     )
@@ -50,25 +52,42 @@ def main() -> None:
             "0x90",
             1,
             "0x62 0xF1 0x90",
+            "STD",
             100,
         ]
     )
 
-    # Row 5: tester present
+    # Row 5: multi-byte expected response example
     ws.append(
         [
             3,
+            "0x7E0",
+            "0x19",
+            "0x02",
+            "0xFF",
+            1,
+            "0x59 0x02 0xFF 0x00",
+            "EXT",
+            100,
+        ]
+    )
+
+    # Row 6: tester present
+    ws.append(
+        [
+            4,
             "0x7E0",
             "0x3E",
             "0x00",
             "",
             0,
             "",
+            "STD",
             1000,
         ]
     )
 
-    # Row 6: upload flash driver macro
+    # Row 7: upload flash driver macro
     ws.append(
         [
             10,
@@ -78,11 +97,12 @@ def main() -> None:
             "",
             0,
             "",
+            "STD",
             0,
         ]
     )
 
-    # Row 7: upload application macro
+    # Row 8: upload application macro
     ws.append(
         [
             20,
@@ -92,6 +112,7 @@ def main() -> None:
             "",
             0,
             "",
+            "STD",
             0,
         ]
     )

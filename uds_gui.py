@@ -1,3 +1,4 @@
+import re
 import sys
 from dataclasses import dataclass
 from typing import List, Optional, Union, Tuple
@@ -8,6 +9,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QGridLayout,
@@ -16,6 +18,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QLineEdit,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -47,6 +50,7 @@ class UDSCommand:
     data_bytes: List[int]
     need_response: bool
     expected_response: Optional[List[int]]
+    is_std: bool
     wait_ms: int
 
 
@@ -106,6 +110,34 @@ class UDSMainWindow(QMainWindow):
         top_layout.addWidget(QLabel("Bus type:"))
         top_layout.addWidget(self.mode_combo)
 
+        # DLC selector (effective for CAN FD)
+        self.dlc_combo = QComboBox()
+        self.dlc_combo.addItems(["8", "12", "16", "20", "24", "32", "48", "64"])
+        self.dlc_combo.setCurrentText("8")
+        self.dlc_combo.setEnabled(False)
+        top_layout.addWidget(QLabel("DLC (CAN FD):"))
+        top_layout.addWidget(self.dlc_combo)
+
+        # CAN FD bitrate switch (BRS)
+        self.brs_checkbox = QCheckBox("BRS")
+        self.brs_checkbox.setEnabled(False)
+        top_layout.addWidget(self.brs_checkbox)
+
+        # Response match mode
+        self.response_match_combo = QComboBox()
+        self.response_match_combo.addItems(["Prefix", "Exact"])
+        self.response_match_combo.setCurrentText("Prefix")
+        top_layout.addWidget(QLabel("Resp Match:"))
+        top_layout.addWidget(self.response_match_combo)
+
+        # Blank byte fill value (for image gaps), format: 0xXX
+        self.blank_fill_input = QLineEdit("0xFF")
+        self.blank_fill_input.setMaxLength(4)
+        self.blank_fill_input.setFixedWidth(70)
+        self.blank_fill_input.setToolTip("Blank byte fill value, format 0xXX")
+        top_layout.addWidget(QLabel("Blank Fill:"))
+        top_layout.addWidget(self.blank_fill_input)
+
         # Timing parameters
         timing_layout = QGridLayout()
         main_layout.addLayout(timing_layout)
@@ -152,7 +184,7 @@ class UDSMainWindow(QMainWindow):
         file_layout.addWidget(self.app_btn, 1, 2)
 
         # Command table
-        self.table = QTableWidget(0, 8)
+        self.table = QTableWidget(0, 9)
         self.table.setHorizontalHeaderLabels(
             [
                 "Index",
@@ -162,6 +194,7 @@ class UDSMainWindow(QMainWindow):
                 "Data",
                 "Need Resp",
                 "Expected Resp",
+                "Frame",
                 "Wait (ms)",
             ]
         )
@@ -197,6 +230,7 @@ class UDSMainWindow(QMainWindow):
         self.flash_driver_btn.clicked.connect(self.choose_flash_driver)
         self.app_btn.clicked.connect(self.choose_app)
         self.device_combo.currentIndexChanged.connect(self.on_device_changed)
+        self.mode_combo.currentTextChanged.connect(self.on_bus_mode_changed)
 
         # Menu shortcuts
         file_menu = self.menuBar().addMenu("&File")
@@ -344,6 +378,24 @@ class UDSMainWindow(QMainWindow):
         text = str(value).strip().lower()
         return text in ("1", "y", "yes", "true", "t", "需要", "是")
 
+    @staticmethod
+    def _parse_frame_type(value) -> bool:
+        """
+        Return True for standard frame, False for extended frame.
+        Accepts: std/standard/11/11bit and ext/extended/29/29bit.
+        Empty defaults to standard.
+        """
+        if value is None:
+            return True
+        text = str(value).strip().lower()
+        if not text:
+            return True
+        if text in ("std", "standard", "11", "11bit", "标准", "标准帧"):
+            return True
+        if text in ("ext", "extended", "29", "29bit", "拓展", "扩展", "拓展帧", "扩展帧"):
+            return False
+        raise ValueError("Frame type must be std/extended (or 11/29)")
+
     def _parse_row(self, row) -> UDSCommand:
         # New row format:
         # 0: index
@@ -353,9 +405,10 @@ class UDSMainWindow(QMainWindow):
         # 4: data bytes
         # 5: need response
         # 6: expected response bytes
-        # 7: wait time (ms)
-        if len(row) < 7:
-            raise ValueError("row must have at least 7 columns")
+        # 7: frame type (std/ext)
+        # 8: wait time (ms)
+        if len(row) < 8:
+            raise ValueError("row must have at least 8 columns")
 
         index = int(row[0]) if row[0] is not None else len(self.commands) + 1
         can_id = self._parse_int(row[1])
@@ -366,7 +419,8 @@ class UDSMainWindow(QMainWindow):
         expected_response = (
             self._parse_byte_list(row[6]) if len(row) > 6 and row[6] is not None else None
         )
-        wait_ms = int(row[7]) if len(row) > 7 and row[7] is not None else 0
+        is_std = self._parse_frame_type(row[7] if len(row) > 7 else None)
+        wait_ms = int(row[8]) if len(row) > 8 and row[8] is not None else 0
 
         return UDSCommand(
             index=index,
@@ -376,6 +430,7 @@ class UDSMainWindow(QMainWindow):
             data_bytes=data_bytes,
             need_response=need_response,
             expected_response=expected_response,
+            is_std=is_std,
             wait_ms=wait_ms,
         )
 
@@ -404,9 +459,18 @@ class UDSMainWindow(QMainWindow):
             if not cmd.expected_response
             else " ".join(f"{b:02X}" for b in cmd.expected_response),
         )
-        set_item(7, str(cmd.wait_ms))
+        set_item(7, "STD" if cmd.is_std else "EXT")
+        set_item(8, str(cmd.wait_ms))
 
     # ---------- Device / UDS handling ----------
+
+    def on_bus_mode_changed(self, mode_text: str) -> None:
+        """DLC selection is only configurable for CAN FD."""
+        is_fd = mode_text == "CAN FD"
+        self.dlc_combo.setEnabled(is_fd)
+        self.brs_checkbox.setEnabled(is_fd)
+        if not is_fd:
+            self.brs_checkbox.setChecked(False)
 
     def connect_device(self) -> None:
         if self.device is not None:
@@ -459,18 +523,23 @@ class UDSMainWindow(QMainWindow):
             self.device = None
             return
 
-        # TSUDS uses CAN FD frame; we keep dlc=8 by default as requested.
+        # DLC is configurable for CAN FD; fixed 8 for CAN.
+        selected_dlc = int(self.dlc_combo.currentText()) if is_fd else 8
+        bitrate_switch = is_fd and self.brs_checkbox.isChecked()
+
+        # TSUDS timeout
         timeout_sec = max(self.p2_spin.value(), self.p2_ext_spin.value()) / 1000.0
         respond_id = self.ecu_id if self.ecu_id is not None else 0x708
         self.uds = TSUDS(
             HwHandle=self.device.HwHandle,
             channel=channel,
-            dlc=8,
+            dlc=selected_dlc,
             request_id=0x700,  # default, will override per command when sending
             respond_id=respond_id,
             is_fd=is_fd,
             is_std=True,
             timeout=timeout_sec,
+            bitrate_switch=bitrate_switch,
         )
 
         self.connect_button.setText("Disconnect")
@@ -514,8 +583,12 @@ class UDSMainWindow(QMainWindow):
         self.uds.request_id = cmd.can_id
         if self.ecu_id is not None:
             self.uds.respond_id = self.ecu_id
+        self.uds.is_std = cmd.is_std
+        self.uds.FProperties = 0x01 | (0x04 if not cmd.is_std else 0x01)
 
         try:
+            # Blank fill is used only for UDS frame padding bytes.
+            self.uds.padding_byte = self.get_blank_fill_byte()
             # Special upload commands
             if isinstance(cmd.service_id, str):
                 if cmd.service_id == "uploadflashdriver":
@@ -536,10 +609,29 @@ class UDSMainWindow(QMainWindow):
                     if ret == 0:
                         response_bytes = data
                         if cmd.expected_response:
-                            if data[: len(cmd.expected_response)] == cmd.expected_response:
+                            expected = cmd.expected_response
+                            is_exact = self.response_match_combo.currentText() == "Exact"
+                            if is_exact:
+                                is_match = data == expected
+                            else:
+                                # Prefix mode: expected bytes should match response prefix.
+                                is_match = data[: len(expected)] == expected
+
+                            if is_match:
                                 status_text = "Match"
                             else:
-                                status_text = "Mismatch"
+                                if is_exact:
+                                    status_text = (
+                                        "Mismatch(Exact) "
+                                        f"(exp: {' '.join(f'{b:02X}' for b in expected)}, "
+                                        f"act: {' '.join(f'{b:02X}' for b in data)})"
+                                    )
+                                else:
+                                    status_text = (
+                                        "Mismatch(Prefix) "
+                                        f"(exp: {' '.join(f'{b:02X}' for b in expected)}, "
+                                        f"act: {' '.join(f'{b:02X}' for b in data[:len(expected)])})"
+                                    )
                         else:
                             status_text = "Received"
                     else:
@@ -739,7 +831,9 @@ class UDSMainWindow(QMainWindow):
     # ---------- Flash functions (34/36/37) ----------
 
     @staticmethod
-    def _build_contiguous_image(segments: List[Tuple[int, bytes]]) -> Tuple[int, bytes]:
+    def _build_contiguous_image(
+        segments: List[Tuple[int, bytes]],
+    ) -> Tuple[int, bytes]:
         """
         Build a contiguous image from (address, data) segments.
         Gaps are filled with 0xFF.
@@ -755,6 +849,12 @@ class UDSMainWindow(QMainWindow):
             offset = addr - start
             image[offset : offset + len(data)] = data
         return start, bytes(image)
+
+    def get_blank_fill_byte(self) -> int:
+        text = self.blank_fill_input.text().strip()
+        if re.fullmatch(r"0[xX][0-9a-fA-F]{2}", text):
+            return int(text, 16)
+        raise ValueError("Blank Fill must be in format 0xXX")
 
     @staticmethod
     def _parse_intel_hex(path: str) -> List[Tuple[int, bytes]]:

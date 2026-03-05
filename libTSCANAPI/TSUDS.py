@@ -25,6 +25,7 @@ class TSUDS():
         self.respond_id = respond_id
         self.fuction_id = fuction_id
         self.timeout = timeout
+        self.padding_byte = 0xAA
         self.msg_data_size = DLC_DATA_BYTE_CNT[self.dlc]
         self.CANFDMsg = TLIBCANFD(FIdxChn=self.channel, FDLC=self.dlc, FIdentifier=self.request_id,
                                 FFDProperties=self.FFDProperties, FProperties=self.FProperties,
@@ -112,6 +113,8 @@ class TSUDS():
                 CANMsg.FData[0] = MsgLen
                 for i in range(MsgLen):
                     CANMsg.FData[i + 1] = SendDatas[i]
+                for i in range(MsgLen + 1, self.msg_data_size):
+                    CANMsg.FData[i] = self.padding_byte
                 return tsapp_transmit_canfd_async(self.HwHandle, CANMsg)
             else:
                 if MsgLen <= Datalengh - 1:
@@ -123,12 +126,16 @@ class TSUDS():
                         CANMsg.FData[0] = MsgLen
                         for i in range(MsgLen):
                             CANMsg.FData[i + 1] = SendDatas[i]
+                        for i in range(MsgLen + 1, DLC_DATA_BYTE_CNT[CANMsg.FDLC]):
+                            CANMsg.FData[i] = self.padding_byte
                         return tsapp_transmit_canfd_async(self.HwHandle, CANMsg)
                     else:
                         CANMsg.FData[0] = 0x00
                         CANMsg.FData[1] = MsgLen
                         for i in range(MsgLen):
                             CANMsg.FData[i + 2] = SendDatas[i]
+                        for i in range(MsgLen + 2, DLC_DATA_BYTE_CNT[CANMsg.FDLC]):
+                            CANMsg.FData[i] = self.padding_byte
                         return tsapp_transmit_canfd_async(self.HwHandle, CANMsg)
         CANMsg.FDLC = self.dlc
         CANMsg.FData[0] = 0x10 + (MsgLen >> 8 & 0xf)
@@ -151,7 +158,7 @@ class TSUDS():
                                 txLen = Datalengh
                             else:
                                 for i in range(txLen, Datalengh):
-                                    CANMsg.FData[i + 1] = 0xAA
+                                    CANMsg.FData[i + 1] = self.padding_byte
                             for i in range(txLen):
                                 CANMsg.FData[i + 1] = SendDatas[i + txIndex]
                             if tsapp_transmit_canfd_async(self.HwHandle, CANMsg) != 0:
